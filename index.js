@@ -92,8 +92,10 @@ ${proposal}
 async function checkBehance() {
   console.log('Buscando ofertas en Behance...');
 
-  const browser = await chromium.launch({ headless: true });
-  const page = await browser.newPage();
+const browser = await chromium.launch({
+  headless: true,
+  args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
+});  const page = await browser.newPage();
 
   try {
     await page.goto('https://www.behance.net/joblist', {
