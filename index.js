@@ -1,38 +1,134 @@
-'use strict';
+require('dotenv').config();
 
-var assign = require('./helpers/assign');
+const { chromium } = require('playwright');
+const TelegramBot = require('node-telegram-bot-api');
+const axios = require('axios');
 
-var ES5 = require('./es5');
-var ES2015 = require('./es2015');
-var ES2016 = require('./es2016');
-var ES2017 = require('./es2017');
-var ES2018 = require('./es2018');
-var ES2019 = require('./es2019');
-var ES2020 = require('./es2020');
-var ES2021 = require('./es2021');
-var ES2022 = require('./es2022');
-var ES2023 = require('./es2023');
-var ES2024 = require('./es2024');
-var ES2025 = require('./es2025');
+const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
+const CLAUDE_API_KEY = process.env.ANTHROPIC_API_KEY;
 
-var ES = {
-	ES5: ES5,
-	ES6: ES2015,
-	ES2015: ES2015,
-	ES7: ES2016,
-	ES2016: ES2016,
-	ES2017: ES2017,
-	ES2018: ES2018,
-	ES2019: ES2019,
-	ES2020: ES2020,
-	ES2021: ES2021,
-	ES2022: ES2022,
-	ES2023: ES2023,
-	ES2024: ES2024,
-	ES2025: ES2025
-};
-assign(ES, ES5);
-delete ES.CheckObjectCoercible; // renamed in ES6 to RequireObjectCoercible
-assign(ES, ES2015);
+const bot = new TelegramBot(TOKEN, { polling: false });
 
-module.exports = ES;
+const KEYWORDS = [
+  'ai', 'social media', 'creative designer', 'branding', 'motion',
+  'content creator', 'advertising', 'ecommerce', 'amazon',
+  'product images', 'product video', 'short videos', 'reels',
+  'tiktok', 'instagram', 'youtube shorts', 'video ads'
+];
+
+const seen = new Set();
+
+async function generateProposal(job) {
+  const prompt = `
+Actúa como experto en propuestas freelance para Behance.
+
+Crea una propuesta ganadora para Leo Gomez Silva.
+
+Perfil:
+Founder & Creative Designer at Leo Visual
+Portfolio: https://leovisual.nl/
+Behance: https://www.behance.net/leostudiocreative
+Instagram: https://instagram.com/leovisual.nl
+
+Especialidades:
+AI Creative Design, Social Media Design, Amazon product images, ecommerce creatives, product videos, reels, TikTok videos, branding, advertising visuals.
+
+Oferta:
+Título: ${job.title}
+Link: ${job.url}
+Keywords: ${job.matches.join(', ')}
+
+Entrega:
+1. Descripción del trabajo
+2. Mensaje personal al cliente
+3. Precio recomendado
+4. Versión corta para aplicar rápido
+
+Tono: profesional, creativo, directo, premium y personalizado.
+`;
+
+  const response = await axios.post(
+    'https://api.anthropic.com/v1/messages',
+    {
+      model: 'claude-3-5-sonnet-20241022',
+      max_tokens: 1200,
+      messages: [{ role: 'user', content: prompt }]
+    },
+    {
+      headers: {
+        'x-api-key': CLAUDE_API_KEY,
+        'anthropic-version': '2023-06-01',
+        'content-type': 'application/json'
+      }
+    }
+  );
+
+  return response.data.content[0].text;
+}
+
+async function sendAlert(job) {
+  const proposal = await generateProposal(job);
+
+  const text = `
+🚨 NUEVA OFERTA DETECTADA
+
+Título:
+${job.title}
+
+Link:
+${job.url}
+
+Keywords:
+${job.matches.join(', ')}
+
+PROPUESTA CLAUDE:
+${proposal}
+`;
+
+  await bot.sendMessage(CHAT_ID, text);
+}
+
+async function checkBehance() {
+  console.log('Buscando ofertas en Behance...');
+
+  const browser = await chromium.launch({ headless: true });
+  const page = await browser.newPage();
+
+  try {
+    await page.goto('https://www.behance.net/joblist', {
+      waitUntil: 'domcontentloaded',
+      timeout: 60000
+    });
+
+    await page.waitForTimeout(5000);
+
+    const jobs = await page.evaluate(() => {
+      return Array.from(document.querySelectorAll('a'))
+        .map(a => ({
+          title: a.innerText.trim(),
+          url: a.href
+        }))
+        .filter(item => item.title.length > 8 && item.url.includes('behance.net'));
+    });
+
+    for (const job of jobs) {
+      const text = `${job.title} ${job.url}`.toLowerCase();
+      const matches = KEYWORDS.filter(k => text.includes(k.toLowerCase()));
+
+      if (matches.length > 0 && !seen.has(job.url)) {
+        seen.add(job.url);
+        await sendAlert({ ...job, matches });
+      }
+    }
+
+    console.log(`Revisión completa. Ofertas encontradas: ${jobs.length}`);
+  } catch (error) {
+    console.error('Error:', error.message);
+  }
+
+  await browser.close();
+}
+
+checkBehance();
+setInterval(checkBehance, 30000);
